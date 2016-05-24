@@ -1,0 +1,89 @@
+---
+title: "Financial Status Report"
+author: "Clayton Yochum"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r global-defaults, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+The cleaned and combined dataset:
+```{r read-and-clean}
+library(googlesheets)
+library(dplyr)
+library(zoo)
+
+# read in the workbook
+workbook <- gs_url("https://docs.google.com/spreadsheets/d/1nga7F6MC3eQ3JdrPG9yV7ZBsipPOxmZLlvidrNeFEQM/")
+
+# cleanup Primary
+# remove lines without shortcodes
+primary_df <- workbook %>%
+  gs_read(ws = "Primary") %>%
+  mutate(Shortcode = as.integer(gsub("[^0-9]", "", Shortcode))) %>%
+  filter(!is.na(Shortcode)) %>%
+  mutate_each(funs(gsub("[^0-9/]", "", .) %>% as.Date(format = "%m/%d/%Y")), contains("Date")) %>%
+  mutate_each(funs(gsub("[^0-9.]", "", .) %>% as.numeric), TotalAwardAmount, CurrentYearDirect, CurrentYearIndirect) %>% 
+  select(
+    Shortcode,
+    ContractName,
+    ContractStartDate,
+    ContractEndDate,
+    CurrentYearStartDate,
+    CurrentYearEndDate,
+    TotalAwardAmount,
+    CurrentYearDirect,
+    CurrentYearIndirect
+  )
+
+# cleanup FinancialStatus
+# only want most recent month for each shortcode
+financial_df <- workbook %>%
+  gs_read(ws = "FinancialStatus") %>%
+  mutate(MonthYear = as.yearmon(MonthYear, format = "%b%y")) %>%  # convert to first-of-month dates
+  group_by(Shortcode) %>%
+  arrange(desc(MonthYear)) %>% 
+  slice(1) %>%
+  ungroup %>%
+  select(
+    Shortcode,
+    MonthYear,
+    Spent,
+    Encumbered,
+    AmountRemaining
+  )
+
+# join together
+df <- inner_join(primary_df, financial_df, by = "Shortcode")
+```
+
+Here's our cleaned-and-combined dataset:
+
+```{r show-df}
+library(knitr)
+library(scales)
+library(DT)
+
+format_dollars <- function(df, cols = c()) {
+  cols <- cols %>%
+    c("TotalAwardAmount", "CurrentYearDirect", "CurrentYearIndirect", "Spent", "Encumbered", "AmountRemaining") %>%
+    intersect(names(df))
+  
+  df %>% mutate_each_(funs(dollar), cols)
+}
+
+df %>% format_dollars %>% as.data.frame
+```
+
+
+Let's check if the money allocated to each project matches up
+
+```{r unaccounted}
+df %>%
+  select(Shortcode, ContractName, CurrentYearDirect, MonthYear, Spent, Encumbered, AmountRemaining) %>%
+  mutate(Unaccounted = (CurrentYearDirect - (Spent + Encumbered + AmountRemaining)) %>% round(2)) %>%
+  format_dollars("Unaccounted") %>% 
+  as.data.frame
+```
