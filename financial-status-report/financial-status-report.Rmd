@@ -9,12 +9,19 @@ output: html_document
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 ```
 
-The cleaned and combined dataset:
-```{r read-and-clean}
+
+```{r dependencies}
 library(googlesheets)
 library(dplyr)
 library(zoo)
+library(knitr)
+library(scales)
+library(tidyr)
+library(ggplot2)
+```
 
+
+```{r read-and-clean}
 # read in the workbook
 workbook <- gs_url("https://docs.google.com/spreadsheets/d/1nga7F6MC3eQ3JdrPG9yV7ZBsipPOxmZLlvidrNeFEQM/")
 
@@ -56,16 +63,12 @@ financial_df <- workbook %>%
   )
 
 # join together
-df <- inner_join(primary_df, financial_df, by = "Shortcode")
+df <- inner_join(primary_df, financial_df, by = "Shortcode") %>%
+  mutate(ContractName = factor(ContractName, levels = ContractName))  # factor in order given
 ```
 
-Here's our cleaned-and-combined dataset:
 
-```{r show-df}
-library(knitr)
-library(scales)
-library(DT)
-
+```{r format-dollars}
 format_dollars <- function(df, cols = c()) {
   cols <- cols %>%
     c("TotalAwardAmount", "CurrentYearDirect", "CurrentYearIndirect", "Spent", "Encumbered", "AmountRemaining") %>%
@@ -73,17 +76,61 @@ format_dollars <- function(df, cols = c()) {
   
   df %>% mutate_each_(funs(dollar), cols)
 }
-
-df %>% format_dollars %>% as.data.frame
 ```
 
 
-Let's check if the money allocated to each project matches up
+## Accounting Verification
+
+Let's verify the money allocated to each project matches up with the Spent, Encumbered, and Amount Remaining pulled from the most recent University-provided reports; we expect "Unaccounted" to be zero:
 
 ```{r unaccounted}
 df %>%
-  select(Shortcode, ContractName, CurrentYearDirect, MonthYear, Spent, Encumbered, AmountRemaining) %>%
+  select(ContractName, CurrentYearDirect, MonthYear, Spent, Encumbered, AmountRemaining) %>%
   mutate(Unaccounted = (CurrentYearDirect - (Spent + Encumbered + AmountRemaining)) %>% round(2)) %>%
   format_dollars("Unaccounted") %>% 
-  as.data.frame
+  kable
 ```
+
+
+## Visual Representation
+
+```{r gathered-df}
+gathered_df <- df %>%
+  select(ContractName, CurrentYearStartDate, CurrentYearEndDate, Spent, Encumbered, Remaining = AmountRemaining) %>%
+  gather("category", "dollars", Spent, Encumbered, Remaining) %>%
+  mutate(
+    ContractName = factor(ContractName, levels = rev(levels(ContractName))),
+    category     = factor(category, levels = c("Spent", "Encumbered", "Remaining"))
+  ) %>%
+  group_by(ContractName) %>% 
+  mutate(
+    length = as.integer(CurrentYearEndDate - CurrentYearStartDate) * (dollars / sum(dollars)),
+    start  = ifelse(category == "Spent", CurrentYearStartDate,
+                    ifelse(category == "Encumbered", CurrentYearStartDate + lag(length, 1, order_by = category),
+                           ifelse(category == "Remaining", CurrentYearStartDate + lag(length, 1, order_by = category) + lag(length, 2, order_by = category), NA)
+             )
+    ) %>% as.Date,
+    end = start + length
+  ) %>% 
+  ungroup %>% 
+  arrange(ContractName, category)
+```
+
+
+```{r charts, fig.width=8}
+ggplot(gathered_df, aes(x = ContractName, y = dollars, fill = category)) +
+  geom_bar(position = "stack", stat = 'identity') +
+  coord_flip() +
+  ggtitle("Spent/Encumbered/Remaining by Contract") +
+  xlab("Contract") +
+  ylab("Amount (in USD)")
+
+ggplot(gathered_df, aes(color = category)) +
+  geom_segment(aes(x = start, xend = end, y = ContractName, yend = ContractName), size = 10) +
+  geom_vline(xintercept = as.integer(Sys.Date())) +
+  ggtitle("Spending Progress Gantt Chart") +
+  xlab("Date") +
+  ylab("Contract")
+
+```
+
