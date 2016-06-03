@@ -32,7 +32,7 @@ primary_df <- workbook %>%
   mutate(Shortcode = as.integer(gsub("[^0-9]", "", Shortcode))) %>%
   filter(!is.na(Shortcode)) %>%
   mutate_each(funs(gsub("[^0-9/]", "", .) %>% as.Date(format = "%m/%d/%Y")), contains("Date")) %>%
-  mutate_each(funs(gsub("[^0-9.]", "", .) %>% as.numeric), TotalAwardAmount, CurrentYearDirect, CurrentYearIndirect) %>% 
+  mutate_each(funs(gsub("[^0-9.]", "", .) %>% as.numeric), TotalAwardAmount, CurrentYearDirect, CurrentYearIndirect) %>%
   select(
     Shortcode,
     ContractName,
@@ -51,7 +51,7 @@ financial_df <- workbook %>%
   gs_read(ws = "FinancialStatus") %>%
   mutate(MonthYear = as.yearmon(MonthYear, format = "%b%y")) %>%  # convert to first-of-month dates
   group_by(Shortcode) %>%
-  arrange(desc(MonthYear)) %>% 
+  arrange(desc(MonthYear)) %>%
   slice(1) %>%
   ungroup %>%
   select(
@@ -87,7 +87,7 @@ Let's verify the money allocated to each project matches up with the Spent, Encu
 df %>%
   select(ContractName, CurrentYearDirect, MonthYear, Spent, Encumbered, AmountRemaining) %>%
   mutate(Unaccounted = (CurrentYearDirect - (Spent + Encumbered + AmountRemaining)) %>% round(2)) %>%
-  format_dollars("Unaccounted") %>% 
+  format_dollars("Unaccounted") %>%
   kable
 ```
 
@@ -102,35 +102,32 @@ gathered_df <- df %>%
     ContractName = factor(ContractName, levels = rev(levels(ContractName))),
     category     = factor(category, levels = c("Spent", "Encumbered", "Remaining"))
   ) %>%
-  group_by(ContractName) %>% 
+  group_by(ContractName) %>%
   mutate(
     length = as.integer(CurrentYearEndDate - CurrentYearStartDate) * (dollars / sum(dollars)),
     start  = ifelse(category == "Spent", CurrentYearStartDate,
                     ifelse(category == "Encumbered", CurrentYearStartDate + lag(length, 1, order_by = category),
                            ifelse(category == "Remaining", CurrentYearStartDate + lag(length, 1, order_by = category) + lag(length, 2, order_by = category), NA)
-             )
+                    )
     ) %>% as.Date,
-    end = start + length
-  ) %>% 
-  ungroup %>% 
+    end    = start + length,
+    width  = sum(dollars) %>% format(big.mark = ",", nsmall = 2) %>% paste0("$", .)
+  ) %>%
+  ungroup %>%
   arrange(ContractName, category)
 ```
 
 
 ```{r charts, fig.width=8}
-ggplot(gathered_df, aes(x = ContractName, y = dollars, fill = category)) +
-  geom_bar(position = "stack", stat = 'identity') +
-  coord_flip() +
-  ggtitle("Spent/Encumbered/Remaining by Contract") +
-  xlab("Contract") +
-  ylab("Amount (in USD)")
+new_levels <- gathered_df %>% arrange(desc(CurrentYearStartDate)) %$% ContractName %>% unique %>% as.character
 
-ggplot(gathered_df, aes(color = category)) +
-  geom_segment(aes(x = start, xend = end, y = ContractName, yend = ContractName), size = 10) +
+gathered_df %>% 
+  mutate(ContractName = factor(ContractName, levels = new_levels)) %>%
+  ggplot(aes(color = category)) +
+  geom_segment(aes(x = start, xend = end, y = ContractName, yend = ContractName, size = width)) +
   geom_vline(xintercept = as.integer(Sys.Date())) +
   ggtitle("Spending Progress Gantt Chart") +
   xlab("Date") +
   ylab("Contract")
-
 ```
 
