@@ -1,22 +1,36 @@
+library(shiny)
+library(dplyr)
+library(ggvis)
+library(DT)
+library(scales)
+
+source("functions.R")
+
+GS_URL <- "https://docs.google.com/spreadsheets/d/1nga7F6MC3eQ3JdrPG9yV7ZBsipPOxmZLlvidrNeFEQM/"
+
+
 shinyServer(function(input, output) {
 
   # reload data each connection
-  df       <- PrepareData(GS_URL)
-  dates    <- unique(df$MonthYear)
-  max_date <- max(dates)
+  withProgress(message = "loading data...", value = 1, {
+    df <- PrepareData(GS_URL)
+  })
 
 
   #### current tab ####
 
-  output$gantt_chart <- renderPlot(
+  # subset and prepare most recent data
+  monthly_df <- filter(df, MonthYear == max(MonthYear))
 
-    height = 800,
+  # generate ggvis plot
+  monthly_df %>%
+    CreateGanttChart %>%
+    set_options(width = "auto", height = 600) %>%
+    bind_shiny("gantt_chart")
 
-    df %>%
-      filter(MonthYear == max_date) %>%
-      CreateGatheredDateFrame %>%
-      CreateGanttChart
-  )
+  output$current_data <- renderDataTable({
+    PrepareRawData(monthly_df)
+  }, options = list(dom = 't'))
 
 
   #### historical tab ####

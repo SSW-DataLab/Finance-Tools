@@ -2,7 +2,8 @@ library(googlesheets)
 library(dplyr)
 library(zoo)
 library(tidyr)
-library(ggplot2)
+library(ggvis)
+library(scales)
 
 
 #### data preparation ####
@@ -72,48 +73,79 @@ CleanFinancialStatusSheet <- function(df) {
 }
 
 
+# prepare raw data for display on Current tab
+# one row per contract, displays accounting error
+PrepareRawData <- function(df) {
+  df <- df %>%
+    mutate(Unaccounted = CurrentYearDirect - (Spent + Encumbered + AmountRemaining)) %>%
+    mutate_at(vars(CurrentYearDirect, Spent, Encumbered, AmountRemaining, Unaccounted), funs(dollar)) %>%
+    select(
+      "Contract Name"           = ContractName,
+      Shortcode,
+      "Report Date"             = MonthYear,
+      "Current Year Start Date" = CurrentYearStartDate,
+      "Current Year End Date"   = CurrentYearEndDate,
+      CurrentYearDirect,
+      Spent,
+      Encumbered,
+      Remaining                 = AmountRemaining,
+      Unaccounted
+    )
+
+  df
+}
+
 #### plotting ####
 
 #
-CreateGatheredDateFrame <- function(df) {
+CreateGanttChart <- function(df) {
 
-  gathered_df <- df %>%
+  # prepare data
+  df <- df %>%
     select(ContractName, CurrentYearStartDate, CurrentYearEndDate, Spent, Encumbered, Remaining = AmountRemaining) %>%
     gather("category", "dollars", Spent, Encumbered, Remaining) %>%
-    mutate(
-      ContractName = factor(ContractName, levels = rev(levels(ContractName))),
-      category     = factor(category, levels = c("Spent", "Encumbered", "Remaining"))
-    ) %>%
+    mutate(category = factor(category, levels = c("Spent", "Encumbered", "Remaining"))) %>%
     group_by(ContractName) %>%
     mutate(
-      length = as.integer(CurrentYearEndDate - CurrentYearStartDate) * (dollars / sum(dollars)),
-      start  = ifelse(category == "Spent", CurrentYearStartDate,
-                      ifelse(category == "Encumbered", CurrentYearStartDate + lag(length, 1, order_by = category),
-                             ifelse(category == "Remaining", CurrentYearStartDate + lag(length, 1, order_by = category) + lag(length, 2, order_by = category), NA)
-                      )
-      ) %>% as.Date,
+      total  = sum(dollars),
+      length = as.integer(CurrentYearEndDate - CurrentYearStartDate) * (dollars / total),
+      start  = ifelse(
+        category == "Spent",
+        CurrentYearStartDate,
+        ifelse(
+          category == "Encumbered",
+          CurrentYearStartDate + lag(length, 1, order_by = category),
+          ifelse(
+            category == "Remaining",
+            CurrentYearStartDate + lag(length, 1, order_by = category) + lag(length, 2, order_by = category),
+            NA
+          ))) %>% as.Date,
       end    = start + length,
-      width  = sum(dollars) %>% format(big.mark = ",", nsmall = 2) %>% paste0("$", .)
+      height = sum(dollars)
     ) %>%
     ungroup %>%
     arrange(ContractName, category)
 
-  gathered_df
-}
+  # function to generate tooltips for each rectangle
+  tooltip <- function(x) {
+    if (is.null(x)) return()
 
-#
-CreateGanttChart <- function(gathered_df) {
+    # x doesn't contain dollars, so get it from the original data
+    dollars <- filter(df, ContractName == x$ContractName & category == x$category)$dollars
 
-  new_levels <- gathered_df %>% arrange(desc(CurrentYearStartDate)) %$% ContractName %>% unique %>% as.character
+    lines <- c(
+      x$ContractName,
+      paste(dollar(dollars), x$category)
+    ) %>% paste0(collapse = "<br />")
+  }
 
-  gantt_chart <- gathered_df %>%
-    mutate(ContractName = factor(ContractName, levels = new_levels)) %>%
-    ggplot(aes(color = category)) +
-    geom_segment(aes(x = start, xend = end, y = ContractName, yend = ContractName, size = width)) +
-    geom_vline(xintercept = as.integer(Sys.Date())) +
-    ggtitle("Spending Progress Gantt Chart") +
-    xlab("Date") +
-    ylab("Contract")
+  # create a ggvis plot
+  plot <- df %>%
+    ggvis(y = ~ContractName, fill = ~category) %>%
+    layer_rects(x = ~start, x2 = ~end, height = band()) %>%
+    add_tooltip(tooltip, "hover") %>%
+    add_axis("x", title = "Date") %>%
+    add_axis("y", title = "Contract", properties = axis_props(title = list(dy = -50)))
 
-  gantt_chart
+  plot
 }
